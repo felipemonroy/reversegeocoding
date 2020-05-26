@@ -1,0 +1,234 @@
+---
+title: "How to reverse geocoding in R"
+author: "Felipe Monroy"
+date: "26-05-2020"
+output: 
+  bookdown::html_document2:
+    toc: false
+always_allow_html: true
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
+```
+
+```{r loadingpackages, include=FALSE}
+library(bookdown)
+library(tidyverse)
+library(lubridate)
+library(here)
+library(kableExtra)
+library(patchwork)
+library(parallel)
+library(doParallel)
+
+```
+
+More than one time, we have found a dataset with coordinates (longitude and latitude), and we struggle to transform it into a human-readable format (a process called reverse geocoding). The difficulty of the transformation will depend on the number of observations that we want to change and the level of detail that we want in the result.
+
+# Available Methods {-}
+
+* Google Maps API: In my opinion, this is the best method if you want a fast and detailed result. The only downside, you have to pay if you're going to use it.
+
+* Photon (Alternative to Google Maps): The best of using the API of Photon to reverse geocoding is that it is free. However, it is a bit slow, and sometimes the locations are not found.
+
+* Maps Package: This is the fastest method that I found to reverse geocoding if you want only a general location, like a country or state. Nevertheless, the transformation to state is only available for some countries. 
+
+* sp and rgdal Packages: This is the most versatile method. It will work on anything that you want if you have a specific map with the boundaries. The difficulty resides in finding the map and the time that the process takes.
+
+# Data {-}
+To test each of the previous methods, we are going to use the data about bushfires provided by [NASA](https://firms.modaps.eosdis.nasa.gov/download/). They collect the information using Visible Infrared Imaging Radiometer Suite (VIIRS) onboard the Suomi satellite. In the dataset, each row corresponds to the intensity of a fire in an area of 0.742 km x 0.776 km. Table \@ref(tab:loadingdata) shows the first rows of the dataset.
+
+```{r loadingdata, echo=FALSE}
+
+ausfire<-read_csv(here("data","fire_archive_V1_121244_2020.csv"))
+usafire<-read_csv(here("data","fire_archive_V1_127341_2019.csv"))
+
+ausfire<-ausfire[1:1000,] %>%
+              select(latitude,longitude,acq_date,frp) %>%
+              rename(date=acq_date,intensity=frp)
+
+usafire<-usafire[1:1000,]
+
+kable(head(ausfire), caption = "Sample observations of the fire dataset") %>%
+               kable_styling(full_width = F, 
+                bootstrap_options = "striped",
+                font_size = 10)
+```
+
+Two partitions of the dataset are used to analyze the reverse geocoding methods, one with data of the United States and other with data of Australia. Each partition has 1000 observations.
+
+# Reverse geocoding {-}
+
+## Using Photon {-}
+I am going to use the United States fire data to test the method using Photon. Table \@ref(tab:photonresults) shows some of the results obtained. The code I used is the following:
+
+```{r photon, include=TRUE, cache=TRUE, results = 'hide'}
+
+library(revgeo)
+
+start <- Sys.time()
+#This line do all the reverse geocoding using Photon as a provider
+results<-revgeo(longitude=usafire$longitude, 
+                            latitude=usafire$latitude, 
+                            provider = 'photon', output="frame")
+
+end <- Sys.time()
+```
+
+
+```{r photonresults, include=TRUE, echo=FALSE}
+
+set.seed(7)
+kable(head(sample_n(results,10)), caption = "First rows of the result using Photon") %>%
+               kable_styling(full_width = F, 
+                bootstrap_options = "striped",
+                font_size = 10)
+
+```
+
+As you can see in the above table, some observations have values not found because most of the coordinates provided were remote locations. The process took almost `r round(as.numeric(end-start),1)` minutes, so it is something to take into consideration with large datasets.
+
+## Maps Package {-}
+This package has only a few included maps to reverse geocoding. Therefore, if some of the following maps have the information that you want, this is the package for you.
+
+* world: Have the boundaries of each country, so it will only return the name of the country.
+* state: It has the boundaries of each state of the USA. It returns the name of the state.
+* county: It has the boundaries of each county of the USA. It returns the name of the county.
+* nz: It has the boundaries of the 3 main islands and 19 smaller coastal islands.
+
+Because the maps for the USA are more detailed, I am going to use the United States fire data to obtain the country, state, and county. Table \@ref(tab:mapssample) shows the first results. The code that I used is the following:
+
+```{r maps, include=TRUE, echo=TRUE}
+
+library(maps)
+
+startm <- Sys.time()
+#I am doing the reverse geocoding using the function map.where from the maps package.
+#Here I used three maps of the package; world, state and county
+country<-map.where(database="world", 
+                           usafire$longitude, usafire$latitude)
+state<-map.where(database="state", 
+                         usafire$longitude, usafire$latitude)
+county<-map.where(database="county", 
+                        usafire$longitude, usafire$latitude)
+endm <- Sys.time()
+```
+
+
+```{r mapssample, include=TRUE, echo=FALSE}
+
+kable(head(cbind(country,state,county)), 
+      caption = "First rows of the result using maps package") %>%
+               kable_styling(full_width = F, 
+                bootstrap_options = "striped",
+                font_size = 10)
+
+```
+
+The advantage of this method is that it only took `r round(as.numeric(endm - startm),1)` seconds, so it is one of the best alternatives if you only need general information.
+
+## Using sp and rgdal Packages {-}
+This method works in a way similar to the maps package. However, you need to provide the maps with the boundaries. In this example, I am going to use the fire data of Australia and the following three maps:
+
+* Countries: It indicates the boundaries of 247 countries. [Link here](https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/10m/cultural/ne_10m_admin_0_countries.zip).
+* States: It shows the boundaries for states and provinces around the world. [Link here](https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/10m/cultural/ne_10m_admin_1_states_provinces.zip)
+* LGAs NSW: It indicates the boundaries of the LGAs in NSW. [Link here](https://data.gov.au/data/dataset/f6a00643-1842-48cd-9c2f-df23a3a1dc1e/resource/acd0b143-3616-4144-9ef5-d83a67f84148/download/nsw_lga_polygon_shp.zip)
+
+Each of the maps is stored in a separate folder. See my [GitHub respository](https://github.com/felipemonroy/reversegeocoding) if you need more details about how I stored the maps. The code that I used is the following:
+
+```{r rgdal, include=TRUE, cache=TRUE, echo=TRUE, results = 'hide'}
+library(sp)
+library(rgdal)
+
+startg <- Sys.time()
+
+#Reading each of the maps. dsn is the folder of the map and layer is the name of the .shp file inside.
+countries_map<- readOGR(dsn="country_map", layer="ne_10m_admin_0_countries")
+states_map <- readOGR(dsn="states_map", layer="ne_10m_admin_1_states_provinces")
+lgas_map <- readOGR(dsn="lga_nsw_map", layer="NSW_LGA_POLYGON_shp")
+
+#This is a function to reverse geocoding based on coordinates
+rev_geo<-function(lat,long){
+              #First the coordinates are transformed to spatialpoints
+              points<-SpatialPoints(matrix(c(long,
+                                             lat),ncol=2,nrow=1))
+              #Creating a projection of the coordinates on the map of countries
+              proj4string(points) <- proj4string(countries_map)
+              #To see where the name of the country is stored in the map object, you need to explore it in R and see the “data” element. In this case, “NAME” has the information that we want. The function over returns the name of the country given the coordinates projected in the countries_map
+              country<-as.character(over(points, countries_map)$NAME)
+              
+              #The same for state
+              proj4string(points) <- proj4string(states_map)
+              state<-as.character(over(points, states_map)$name)
+              
+              #The same for LGA (I have only the map for NSW LGAs)
+              proj4string(points) <- proj4string(lgas_map)
+              LGA<-as.character(over(points, lgas_map)$NSW_LGA__3)
+              
+              return(as.vector(c(country,state,LGA)))
+}
+
+library(snow)
+library(foreach)
+library(doParallel)
+
+cl <- makeCluster(detectCores() - 1) 
+registerDoParallel(cl)
+
+#Now for each row in the dataset I am going to return the reverse geocoding
+# I am using parallel processing here to make the process faster
+map_info<-foreach(i=1:nrow(ausfire), 
+                      .packages = c("sp", "rgdal"), .combine=rbind) %dopar% {
+                                    rev_geo(as.numeric(ausfire[i,"latitude"]),
+                                            as.numeric(ausfire[i,"longitude"]))
+}
+
+stopCluster(cl)
+
+endg <- Sys.time()
+```
+
+Table \@ref(tab:rgdalrestuls) shows the results of using this method.
+
+```{r rgdalrestuls, include=TRUE, echo=FALSE}
+
+temp<-data.frame(map_info)
+names(temp)<-c("Country","State","LGA")
+temp<-temp %>% filter(!is.na(LGA))
+
+kable(head(temp), 
+      caption = "First rows of the result using sp and rgdal package") %>%
+               kable_styling(full_width = F, 
+                bootstrap_options = "striped",
+                font_size = 10)
+
+```
+
+This method took `r round(as.numeric(endg - startg),1)` minutes.
+
+# Conclusion {-}
+
+Table \@ref(tab:summaryresults) shows the processing time of each of the methods. However, they are not enterily comparable because the result is different.
+
+```{r summaryresults, include=TRUE, echo=FALSE}
+
+temp<-data.frame(Method=c("Photon","Maps","sp & rgdal"),
+                 "Time_minutes"=c(round(as.numeric(end-start),3),
+                                  round(as.numeric(endm - startm)/60,3),
+                                  round(as.numeric(endg - startg),3)))
+
+kable(temp, 
+      caption = "Summary of the results") %>%
+               kable_styling(full_width = F, 
+                bootstrap_options = "striped",
+                font_size = 10)
+
+```
+
+Depending on your objective, now you have three methods that you can use. If you only need general information maps package is the fastest. On the other extreme, you can get detailed info using Photon. Finally, in the middle, you have a customized method to reverse geocoding using sp and rgdal packages.
+
